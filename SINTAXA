@@ -1,0 +1,75 @@
+Require Import Strings.String.
+Local Open Scope string_scope. 
+Local Open Scope list_scope.
+Scheme Equality for string.
+
+Inductive ErrorNat :=
+  | error_nat : ErrorNat
+  | num : nat -> ErrorNat.
+
+Inductive ErrorBool :=
+  | error_bool : ErrorBool
+  | boolean : bool -> ErrorBool.
+
+Coercion num: nat >-> ErrorNat.
+Coercion boolean: bool >-> ErrorBool.
+
+Inductive Result :=
+  | err_undecl : Result
+  | err_assign : Result
+  | default : Result
+  | res_nat : ErrorNat -> Result
+  | res_bool : ErrorBool -> Result.
+
+Scheme Equality for Result.
+
+Definition Env := string -> Result.
+
+Definition env : Env := fun x => err_undecl. (* orice variabila este nedeclarata initial *)
+
+(* Pentru a face update la o variabila trebuie sa fie indeplinite doua conditii: sa fie declarata (trebuie sa
+   aiba valoarea default) iar valoarea cu care fac update sa corespunda cu tipul cu care variabila a fost declarata*)
+
+Definition check_eq_over_types (t1 : Result) (t2 : Result) : bool :=
+  match t1 with
+    | err_undecl => match t2 with 
+                     | err_undecl => true
+                     | _ => false
+                     end
+    | err_assign => match t2 with 
+                     | err_assign => true
+                     | _ => false
+                     end
+    | default => match t2 with 
+                     | default => true
+                     | _ => false
+                     end
+    | res_nat a => match t2 with 
+                     | res_nat b => true
+                     | _ => false
+                     end
+    | res_bool a => match t2 with 
+                     | res_bool b => true
+                     | _ => false
+                     end
+  end.
+
+Compute (check_eq_over_types (res_nat 1000) (res_nat 100)). 
+Compute (check_eq_over_types err_undecl (res_nat 100)). 
+
+Definition update (env : Env) (x : string) (v : Result) : Env :=
+  fun y =>
+    if (string_beq y x) 
+        then 
+        if (andb (bool_beq (check_eq_over_types v default) true) (bool_beq (check_eq_over_types (env x) err_undecl) true)) then v
+            else if (bool_beq (check_eq_over_types (env x) default) true)  then v
+                     else if (bool_beq (check_eq_over_types (env x) err_undecl) true) then (env x)
+                              else if (bool_beq (check_eq_over_types (env x) v) true) then v
+                                       else err_assign
+    else (env y).
+
+Notation "S [ V /' X ]" := (update S X V) (at level 0).
+
+Compute (env "y").
+Compute (update (update env "y" (default)) "y" (res_bool true) "y").
+Compute ((update (update (update env "y" default) "y" (res_nat 10)) "y" (res_bool true)) "y").
