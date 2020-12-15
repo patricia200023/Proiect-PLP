@@ -1,0 +1,314 @@
+Require Import Strings.String.
+Local Open Scope string_scope. 
+Local Open Scope list_scope.
+Scheme Equality for string.
+
+Require Import Arith.
+Require Import Ascii.
+Require Import Bool.
+Require Import Coq.Strings.Byte.
+
+Inductive ErrorNat :=
+  | error_nat : ErrorNat
+  | num : nat -> ErrorNat.
+
+Inductive ErrorBool :=
+  | error_bool : ErrorBool
+  | boolean : bool -> ErrorBool.
+
+Coercion num: nat >-> ErrorNat.
+Coercion boolean: bool >-> ErrorBool.
+
+Inductive Result :=
+  | err_undecl : Result
+  | err_assign : Result
+  | default : Result
+  | res_nat : ErrorNat -> Result
+  | res_bool : ErrorBool -> Result.
+
+Scheme Equality for Result.
+
+Definition Env := string -> Result.
+
+Definition env : Env := fun x => err_undecl. (* orice variabila este nedeclarata initial *)
+
+(* Pentru a face update la o variabila trebuie sa fie indeplinite doua conditii: sa fie declarata (trebuie sa
+   aiba valoarea default) iar valoarea cu care fac update sa corespunda cu tipul cu care variabila a fost declarata*)
+
+Definition check_eq_over_types (t1 : Result) (t2 : Result) : bool :=
+  match t1 with
+    | err_undecl => match t2 with 
+                     | err_undecl => true
+                     | _ => false
+                     end
+    | err_assign => match t2 with 
+                     | err_assign => true
+                     | _ => false
+                     end
+    | default => match t2 with 
+                     | default => true
+                     | _ => false
+                     end
+    | res_nat a => match t2 with 
+                     | res_nat b => true
+                     | _ => false
+                     end
+    | res_bool a => match t2 with 
+                     | res_bool b => true
+                     | _ => false
+                     end
+  end.
+
+Compute (check_eq_over_types (res_nat 1000) (res_nat 100)). 
+Compute (check_eq_over_types err_undecl (res_nat 100)). 
+
+Definition update (env : Env) (x : string) (v : Result) : Env :=
+  fun y =>
+    if (string_beq y x) 
+        then 
+        if (andb (bool_beq (check_eq_over_types v default) true) (bool_beq (check_eq_over_types (env x) err_undecl) true)) then v
+            else if (bool_beq (check_eq_over_types (env x) default) true)  then v
+                     else if (bool_beq (check_eq_over_types (env x) err_undecl) true) then (env x)
+                              else if (bool_beq (check_eq_over_types (env x) v) true) then v
+                                       else err_assign
+    else (env y).
+
+Notation "S [ V /' X ]" := (update S X V) (at level 0).
+
+Compute (env "y").
+Compute (update (update env "y" (default)) "y" (res_bool true) "y").
+Compute ((update (update (update env "y" default) "y" (res_nat 10)) "y" (res_bool true)) "y"). 
+
+Inductive AExp :=
+| avar: string -> AExp 
+| anum: ErrorNat -> AExp
+| aplus: AExp -> AExp -> AExp
+| asub: AExp -> AExp -> AExp
+| amul: AExp -> AExp -> AExp 
+| adiv: AExp -> AExp -> AExp
+| amod: AExp -> AExp -> AExp. 
+
+Coercion anum: ErrorNat >-> AExp.
+Coercion avar: string >-> AExp.
+
+Notation "A +' B" := (aplus A B)(at level 50, left associativity).
+Notation "A -' B" := (asub A B)(at level 50, left associativity).
+Notation "A *' B" := (amul A B)(at level 48, left associativity).
+Notation "A /' B" := (adiv A B)(at level 48, left associativity).
+Notation "A %' B" := (amod A B)(at level 45, left associativity).
+
+Reserved Notation "A =[ S ]=> N" (at level 60).
+Reserved Notation "B ={ S }=> B'" (at level 70).
+
+Definition plus_ErrorNat (n1 n2 : ErrorNat) : ErrorNat :=
+  match n1, n2 with
+    | error_nat, _ => error_nat
+    | _, error_nat => error_nat
+    | num v1, num v2 => num (v1 + v2)
+    end.
+
+Definition sub_ErrorNat (n1 n2 : ErrorNat) : ErrorNat :=
+  match n1, n2 with
+    | error_nat, _ => error_nat
+    | _, error_nat => error_nat
+    | num n1, num n2 => if Nat.ltb n1 n2
+                        then error_nat
+                        else num (n1 - n2)
+    end.
+
+Definition mul_ErrorNat (n1 n2 : ErrorNat) : ErrorNat :=
+  match n1, n2 with
+    | error_nat, _ => error_nat
+    | _, error_nat => error_nat
+    | num v1, num v2 => num (v1 * v2)
+    end.
+
+Definition div_ErrorNat (n1 n2 : ErrorNat) : ErrorNat :=
+  match n1, n2 with
+    | error_nat, _ => error_nat
+    | _, error_nat => error_nat
+    | _, num 0 => error_nat
+    | num v1, num v2 => num (Nat.div v1 v2)
+    end.
+
+Definition mod_ErrorNat (n1 n2 : ErrorNat) : ErrorNat :=
+  match n1, n2 with
+    | error_nat, _ => error_nat
+    | _, error_nat => error_nat
+    | _, num 0 => error_nat
+    | num v1, num v2 => num (v1 - v2 * (Nat.div v1 v2))
+    end.
+
+Inductive aeval : AExp -> Env -> ErrorNat -> Prop :=
+| const : forall n sigma, anum n =[ sigma ]=> n
+| var : forall v sigma, avar v =[ sigma ]=>  match (sigma v) with
+                                              | res_nat x => x
+                                              | _ => error_nat
+                                              end
+| add : forall a1 a2 i1 i2 sigma n,
+    a1 =[ sigma ]=> i1 ->
+    a2 =[ sigma ]=> i2 ->
+    n = (plus_ErrorNat i1 i2) ->
+    a1 +' a2 =[sigma]=> n
+| times : forall a1 a2 i1 i2 sigma n,
+    a1 =[ sigma ]=> i1 ->
+    a2 =[ sigma ]=> i2 ->
+    n = (mul_ErrorNat i1 i2) ->
+    a1 *' a2 =[sigma]=> n
+| substract : forall a1 a2 i1 i2 sigma n,
+    a1 =[ sigma ]=> i1 ->
+    a2 =[ sigma ]=> i2 ->
+    n = (sub_ErrorNat i1 i2) ->
+    a1 -' a2 =[sigma]=> n
+| division : forall a1 a2 i1 i2 sigma n,
+    a1 =[ sigma ]=> i1 ->
+    a2 =[ sigma ]=> i2 ->
+    n = (div_ErrorNat  i1 i2) ->
+    a1 /' a2 =[sigma]=> n
+| modulo : forall a1 a2 i1 i2 sigma n,
+    a1 =[ sigma ]=> i1 ->
+    a2 =[ sigma ]=> i2 ->
+    n = (mod_ErrorNat i1 i2) ->
+    a1 %' a2 =[sigma]=> n
+where "a =[ sigma ]=> n" := (aeval a sigma n).
+
+Inductive Stiva : Set :=
+| bottom_LIFO : Stiva
+| elem_LIFO : nat -> Stiva -> Stiva.
+
+Check Stiva.
+
+Check bottom_LIFO.
+
+Check (elem_LIFO 3 (elem_LIFO 2 (bottom_LIFO))).
+
+Definition push (S : Stiva)(new_elem : nat) : Stiva := (elem_LIFO new_elem S).
+
+Compute (push (elem_LIFO 2 (bottom_LIFO)) 3).
+
+Definition pop (S : Stiva) : Stiva :=
+match S with
+  | elem_LIFO n S' => S'
+  | bottom_LIFO => bottom_LIFO
+end.
+
+Compute (pop (elem_LIFO 3 (elem_LIFO 2 (bottom_LIFO)))).
+
+Fixpoint strlen (s : string) : nat :=
+  match s with
+  | EmptyString => 0
+  | String c s' => S (strlen s')
+  end.
+
+Reserved Notation "x ++ y" (right associativity, at level 60).
+
+Definition concat (s1 s2 : string) : string :=
+  match s1 with
+  | EmptyString => s2
+  | String c s1' => String c (s1' ++ s2)
+  end.
+
+Compute (concat "" "bulai").
+
+Compute (concat "patricia " "bulai").
+
+Inductive BExp :=
+| berror
+| btrue
+| bfalse
+| bvar: string -> BExp
+| blt : AExp -> AExp -> BExp
+| bnot : BExp -> BExp
+| band : BExp -> BExp -> BExp
+| bor : BExp -> BExp -> BExp.
+
+Notation "A <' B" := (blt A B) (at level 70).
+Notation "!' A" := (bnot A)(at level 51, left associativity).
+Notation "A &&' B" := (band A B)(at level 52, left associativity).
+Notation "A ||' B" := (bor A B)(at level 53, left associativity).
+
+Definition lt_ErrorBool (n1 n2 : ErrorNat) : ErrorBool :=
+  match n1, n2 with
+    | error_nat, _ => error_bool
+    | _, error_nat => error_bool
+    | num v1, num v2 => boolean (Nat.ltb v1 v2)
+    end.
+
+Definition not_ErrorBool (n :ErrorBool) : ErrorBool :=
+  match n with
+    | error_bool => error_bool
+    | boolean v => boolean (negb v)
+    end.
+
+Definition and_ErrorBool (n1 n2 : ErrorBool) : ErrorBool :=
+  match n1, n2 with
+    | error_bool, _ => error_bool
+    | _, error_bool => error_bool
+    | boolean v1, boolean v2 => boolean (andb v1 v2)
+    end.
+
+Definition or_ErrorBool (n1 n2 : ErrorBool) : ErrorBool :=
+  match n1, n2 with
+    | error_bool, _ => error_bool
+    | _, error_bool => error_bool
+    | boolean v1, boolean v2 => boolean (orb v1 v2)
+    end.
+
+Reserved Notation "B ={ S }=> B'" (at level 70).
+Inductive beval : BExp -> Env -> ErrorBool -> Prop :=
+| b_error: forall sigma, berror  ={ sigma }=> error_bool
+| b_true : forall sigma, btrue ={ sigma }=> true
+| b_false : forall sigma, bfalse ={ sigma }=> false
+| b_var : forall v sigma, bvar v ={ sigma }=>  match (sigma v) with
+                                                | res_bool x => x
+                                                | _ => error_bool
+                                                end
+| b_lessthan : forall a1 a2 i1 i2 sigma b,
+    a1 =[ sigma ]=> i1 ->
+    a2 =[ sigma ]=> i2 ->
+    b = (lt_ErrorBool i1 i2) ->
+    a1 <' a2 ={ sigma }=> b
+| b_not : forall a1 i1 sigma b,
+    a1 ={ sigma }=> i1 ->
+    b = (not_ErrorBool i1) ->
+    !'a1 ={ sigma }=> b
+| b_and : forall a1 a2 i1 i2 sigma b,
+    a1 ={ sigma }=> i1 ->
+    a2 ={ sigma }=> i2 ->
+    b = (and_ErrorBool i1 i2) ->
+    (a1 &&' a2) ={ sigma }=> b 
+| b_or : forall a1 a2 i1 i2 sigma b,
+    a1 ={ sigma }=> i1 ->
+    a2 ={ sigma }=> i2 ->
+    b = (or_ErrorBool i1 i2) ->
+    (a1 ||' a2) ={ sigma }=> b 
+where "B ={ S }=> B'" := (beval B S B').
+
+
+Inductive Stmt :=
+  | nat_decl: string -> AExp -> Stmt 
+  | bool_decl: string -> BExp -> Stmt 
+  | nat_assign : string -> AExp -> Stmt 
+  | bool_assign : string -> BExp -> Stmt 
+  | sequence : Stmt -> Stmt -> Stmt
+  | while : BExp -> Stmt -> Stmt
+  | skip : Stmt
+  | break : Stmt
+  | switch : BExp -> Stmt -> Stmt -> Stmt
+  | ifthenelse : BExp -> Stmt -> Stmt -> Stmt
+  | ifthen : BExp -> Stmt -> Stmt.
+
+Inductive status : Type :=
+  | SContinue : status
+  | SBreak : status.
+
+Notation "'BREAK'" := break.
+Notation "'SKIP'" := skip.
+
+Notation "X :n= A" := (nat_assign X A)(at level 90).
+Notation "X :b= A" := (bool_assign X A)(at level 90).
+Notation "'int' X ::= A" := (nat_decl X A)(at level 90).
+Notation "'bool' X ::= A" := (bool_decl X A)(at level 90).
+Notation "S1 ;; S2" := (sequence S1 S2) (at level 93, right associativity).
+Notation "'fors' ( A ~ B ~ C ) { S }" := (A ;; while B ( S ;; C )) (at level 97).
+
